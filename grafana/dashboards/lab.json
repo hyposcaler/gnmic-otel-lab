@@ -1,0 +1,215 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Interface in-rate (data plane)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(gnmic_port_stats_interfaces_interface_state_counters_in_octets{source!=\"\", interface_name!~\"Management0|mgmt0|Loopback.*|system0\"}[1m]) * 8",
+          "legendFormat": "{{source}} {{interface_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Interface out-rate (data plane)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(gnmic_port_stats_interfaces_interface_state_counters_out_octets{source!=\"\", interface_name!~\"Management0|mgmt0|Loopback.*|system0\"}[1m]) * 8",
+          "legendFormat": "{{source}} {{interface_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Interface errors (in + out, data plane)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(gnmic_port_stats_interfaces_interface_state_counters_in_errors{source!=\"\", interface_name!~\"Management0|mgmt0|Loopback.*|system0\"}[1m])",
+          "legendFormat": "{{source}} {{interface_name}} in-err",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(gnmic_port_stats_interfaces_interface_state_counters_out_errors{source!=\"\", interface_name!~\"Management0|mgmt0|Loopback.*|system0\"}[1m])",
+          "legendFormat": "{{source}} {{interface_name}} out-err",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "OTel Collector: accepted metric points/sec",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(otelcol_receiver_accepted_metric_points_total{receiver=\"otlp\"}[1m])",
+          "legendFormat": "otlp accepted",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(otelcol_receiver_refused_metric_points_total{receiver=\"otlp\"}[1m])",
+          "legendFormat": "otlp refused",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus remote_write receive rate (by response code)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(prometheus_http_requests_total{handler=\"/api/v1/write\"}[1m])",
+          "legendFormat": "{{code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "remote_write send failures (collector side)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(otelcol_exporter_send_failed_metric_points_total{exporter=\"prometheusremotewrite\"}[1m])",
+          "legendFormat": "send-failed/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "gNMI target health (1 = up)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "gnmic_target_up",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "gNMI subscribe response rate (per target)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(gnmic_subscribe_number_of_received_subscribe_response_messages_total[1m])",
+          "legendFormat": "{{source}} {{subscription}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Loki ingest rate (lines/s by tenant)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(loki_distributor_lines_received_total[1m])",
+          "legendFormat": "{{tenant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps" }
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Syslog stream (all devices, last 15m)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 33 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{service_name=~\".+\"}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showLabels": false,
+        "showCommonLabels": false,
+        "showTime": true,
+        "wrapLogMessage": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["gnmic", "otel", "lab"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "",
+  "title": "gNMI \u2192 OTLP \u2192 Prom Lab",
+  "uid": "gnmic-otel-lab",
+  "version": 4,
+  "weekStart": ""
+}

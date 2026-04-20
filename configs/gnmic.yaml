@@ -1,0 +1,111 @@
+################################################################
+# gnmic config — streaming gNMI subscriptions → OTLP to collector
+################################################################
+
+# Top-level logging — without this, gnmic is nearly silent on stderr.
+log: true
+
+
+# Target device(s)
+targets:
+  # Arista cEOS — plaintext gRPC on :6030 (no TLS in lab)
+  ceos1:
+    address: 172.22.22.11:6030
+    username: admin
+    password: admin
+    insecure: true
+    timeout: 10s
+
+  # Nokia SR Linux — gNMI on :57400 with self-signed TLS (containerlab cert)
+  srl1:
+    address: 172.22.22.12:57400
+    username: admin
+    password: NokiaSrl1!
+    skip-verify: true        # accept containerlab's self-signed cert
+    timeout: 10s
+
+# Streaming subscriptions — STREAM mode, SAMPLE
+# Encoding: json_ietf works on cEOS with OpenConfig paths
+subscriptions:
+  # cEOS and SRL accept the origin qualifier, so one subscription works for both.
+  port-stats:
+    paths:
+      - openconfig:/interfaces/interface/state/counters
+    mode: stream
+    stream-mode: sample
+    sample-interval: 10s
+    # proto encoding: both platforms emit scalar leaf updates. With
+    # json_ietf, SR Linux returns the whole container as one json_ietf_val
+    # blob, which gnmic's OTLP exporter silently drops.
+    encoding: proto
+
+  system-stats:
+    paths:
+      - openconfig:/components/component[name=*]/state/memory/available
+      - openconfig:/components/component[name=*]/state/memory/utilized
+    mode: stream
+    stream-mode: sample
+    sample-interval: 30s
+    # proto encoding: both platforms emit scalar leaf updates. With
+    # json_ietf, SR Linux returns the whole container as one json_ietf_val
+    # blob, which gnmic's OTLP exporter silently drops.
+    encoding: proto
+
+# Event processors — applied to each gnmic event before it's handed to the output
+processors:
+  # cEOS appears to freeze the gNMI Notification timestamp on unchanged leaves (e.g.
+  # memory/available never resamples). gnmic's OTLP converter uses that
+  # notification ts as the datapoint ts, so Prometheus sees the same ancient
+  # point forever and drops the series past the 5m lookback-delta.
+  # Rewriting the event timestamp to "now" makes every forwarded sample look
+  # fresh to Prometheus. This loses true sample-time fidelity, which is fine
+  # for lab gauges but would NOT be correct on a real fleet where you care
+  # about when a counter was actually sampled on-box.
+  stamp-now:
+    event-override-ts:
+      precision: ns
+
+# OTLP output — native OTLP/gRPC to the OTel Collector
+outputs:
+  otlp-collector:
+    type: otlp
+    endpoint: otelcol:4317
+    protocol: grpc
+    timeout: 10s
+    # Collector's OTLP gRPC receiver is plaintext (no tls: block in otelcol.yaml),
+    # so gnmic must NOT negotiate TLS — omit the tls: block entirely.
+    batch-size: 500
+    interval: 5s
+    buffer-size: 1000
+    max-retries: 3
+
+    # Namespace + subscription name in the metric name
+    metric-prefix: gnmic
+    append-subscription-name: true
+
+    counter-patterns:
+      - "counter"
+      - "octets|packets|bytes"
+      - "errors|discards|drops"
+
+    resource-tag-keys:
+      - source
+      - target
+
+    # Static Resource attributes — follow OTel semconv where possible
+    resource-attributes:
+      service.name: gnmic
+      service.namespace: network-telemetry
+      deployment.environment: lab
+
+    event-processors:
+      - stamp-now
+
+    num-workers: 2
+    enable-metrics: true       # expose gnmic's own metrics on :9804
+
+# gnmic's own telemetry for the collector itself (debugging)
+api-server:
+  address: ":7890"
+  enable-metrics: true     # exposes /metrics on the api-server port
+  debug: false

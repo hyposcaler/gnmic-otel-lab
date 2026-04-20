@@ -1,0 +1,76 @@
+# SR Linux startup — eBGP peer of ceos1 (AS 65002 <-> 65001)
+#
+# Topology:
+#   ceos1:Ethernet2 (10.0.23.1) <-- transit --> srl1:ethernet-1/1 (10.0.23.2)
+#   srl1:ethernet-1/2 (10.0.2.1) <-- host link --> host2:eth1 (10.0.2.2)
+#
+# srl1 advertises to ceos1:
+#   - 10.0.2.0/30   (host2 subnet)
+#   - 2.2.2.2/32    (system loopback / router-id)
+#
+# gNMI: port 57400 w/ self-signed TLS; admin/NokiaSrl1! by default.
+
+# --- Interfaces --------------------------------------------------------
+set / interface ethernet-1/1 admin-state enable
+set / interface ethernet-1/1 description to-ceos1-transit
+set / interface ethernet-1/1 subinterface 0 admin-state enable
+set / interface ethernet-1/1 subinterface 0 ipv4 admin-state enable
+set / interface ethernet-1/1 subinterface 0 ipv4 address 10.0.23.2/30
+
+set / interface ethernet-1/2 admin-state enable
+set / interface ethernet-1/2 description to-host2
+set / interface ethernet-1/2 subinterface 0 admin-state enable
+set / interface ethernet-1/2 subinterface 0 ipv4 admin-state enable
+set / interface ethernet-1/2 subinterface 0 ipv4 address 10.0.2.1/30
+
+set / interface system0 admin-state enable
+set / interface system0 subinterface 0 admin-state enable
+set / interface system0 subinterface 0 ipv4 admin-state enable
+set / interface system0 subinterface 0 ipv4 address 2.2.2.2/32
+
+# --- Default network-instance -----------------------------------------
+set / network-instance default type default
+set / network-instance default admin-state enable
+set / network-instance default interface ethernet-1/1.0
+set / network-instance default interface ethernet-1/2.0
+set / network-instance default interface system0.0
+
+# --- Routing policy: which prefixes to announce to ceos1 --------------
+set / routing-policy prefix-set local
+set / routing-policy prefix-set local prefix 2.2.2.2/32 mask-length-range 32..32
+set / routing-policy prefix-set local prefix 10.0.2.0/30 mask-length-range 30..30
+set / routing-policy policy export-local
+set / routing-policy policy export-local statement 10 match prefix prefix-set local
+set / routing-policy policy export-local statement 10 action policy-result accept
+
+# --- eBGP --------------------------------------------------------------
+set / network-instance default protocols bgp admin-state enable
+set / network-instance default protocols bgp autonomous-system 65002
+set / network-instance default protocols bgp router-id 2.2.2.2
+# Without this, SR Linux applies a default deny policy on eBGP sessions.
+set / network-instance default protocols bgp ebgp-default-policy import-reject-all false
+set / network-instance default protocols bgp ebgp-default-policy export-reject-all false
+set / network-instance default protocols bgp afi-safi ipv4-unicast admin-state enable
+set / network-instance default protocols bgp group eBGP admin-state enable
+set / network-instance default protocols bgp group eBGP export-policy [ export-local ]
+set / network-instance default protocols bgp group eBGP afi-safi ipv4-unicast admin-state enable
+set / network-instance default protocols bgp neighbor 10.0.23.1 admin-state enable
+set / network-instance default protocols bgp neighbor 10.0.23.1 peer-as 65001
+set / network-instance default protocols bgp neighbor 10.0.23.1 peer-group eBGP
+
+# --- Remote syslog to the OTel collector (UDP 5514) --------------------
+# Two non-obvious requirements on SR Linux 26.x:
+#   1. network-instance mgmt — the collector IP is only reachable via
+#      the mgmt NI (where mgmt0 lives). Default NI can't route there.
+#   2. Explicit facility list — an empty facility list means "send
+#      nothing". SR Linux emits under many facilities (see `info /system
+#      logging` buffers), so enumerate the common ones.
+set / system logging remote-server 172.22.22.30 transport udp
+set / system logging remote-server 172.22.22.30 remote-port 5514
+set / system logging remote-server 172.22.22.30 network-instance mgmt
+set / system logging remote-server 172.22.22.30 facility local6 priority match-above informational
+set / system logging remote-server 172.22.22.30 facility auth   priority match-above informational
+set / system logging remote-server 172.22.22.30 facility daemon priority match-above informational
+set / system logging remote-server 172.22.22.30 facility kern   priority match-above informational
+set / system logging remote-server 172.22.22.30 facility syslog priority match-above informational
+set / system logging remote-server 172.22.22.30 facility user   priority match-above informational

@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    lab: gnmic-otel
+
+# Prometheus runs with --web.enable-remote-write-receiver; all telemetry
+# data arrives via /api/v1/write from the OTel collector. The only thing
+# we scrape locally is Prom itself.
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

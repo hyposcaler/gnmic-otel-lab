@@ -1,0 +1,36 @@
+# containerlab runtime — regenerated on every `clab deploy`
+clab-*/
+.topo-data.yml
+topology-data.json
+ansible-inventory.yml
+authorized_keys
+*.tgz
+
+# TLS material that containerlab auto-generates for SR Linux / other nodes
+*.pem
+*.crt
+*.key
+
+# Backup files
+*.bak
+*.swp
+*.swo
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.iml
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Tool-local state (Claude Code session artifacts)
+.claude/
+
+# Leftover from a mkdir with unquoted braces — literal-named directory,
+# not part of the lab. Safe to delete manually.
+{configs,grafana/
+
+# Logs
+*.log

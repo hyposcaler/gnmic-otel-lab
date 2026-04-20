@@ -1,0 +1,158 @@
+################################################################
+# OpenTelemetry Collector — OTLP receiver → Prom remote_write
+################################################################
+
+receivers:
+  # OTLP receiver (gRPC from gnmic, HTTP available for testing).
+  # Also receives the collector's own self-telemetry via the loopback OTLP
+  # exporter configured in service.telemetry.metrics below.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape gnmic's own /metrics endpoint (api-server.enable-metrics: true).
+  # Brings gnmic process metrics (gnmic_target_up, subscribe counters, Go
+  # runtime) into the same pipeline as everything else.
+  prometheus/gnmic:
+    config:
+      scrape_configs:
+        - job_name: gnmic
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['gnmic:7890']
+
+  # Syslog from network devices. RFC5424 on UDP 5514 (non-privileged so
+  # the collector container doesn't need CAP_NET_BIND_SERVICE).
+  syslog:
+    udp:
+      listen_address: 0.0.0.0:5514
+    protocol: rfc5424
+
+  # Scrape Loki's own /metrics — distributor/ingester/querier internals.
+  prometheus/loki:
+    config:
+      scrape_configs:
+        - job_name: loki
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['loki:3100']
+
+processors:
+  # memory_limiter goes FIRST. Non-negotiable.
+  # At 75% it starts refusing; at 80% it hard-refuses.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Batch before export. Reduces RPC overhead.
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+    send_batch_max_size: 1500
+
+  # gnmic gauges for counter-like metrics will become Prom gauges,
+  # but for anything we flagged as Sum/cumulative, Prom expects
+  # cumulative anyway. Prom remote_write handles cumulative natively.
+  # Keep this processor around for future delta-sourced data.
+  # cumulativetodelta: {}
+
+  # Enrich/normalize resource attributes
+  resource:
+    attributes:
+      - key: telemetry.collector
+        value: otelcol-contrib
+        action: upsert
+
+  # Light attribute hygiene — drop high-cardinality junk if it shows up
+  attributes:
+    actions:
+      - key: gnmic_version
+        action: delete
+
+  # Drop known-noisy log records before they hit Loki. OTTL conditions;
+  # any match drops the record. Extend this list as new noise surfaces.
+  filter/drop-noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        # SR Linux boot-time warning — EDA TLS profile not configured in lab
+        - 'IsMatch(body, "Unable to retrieve TLS profile .EDA.")'
+
+exporters:
+  # Primary target: Prometheus via remote_write
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+    # target_info creates a per-resource info metric — useful for joins
+    target_info:
+      enabled: true
+    # Preserve resource attrs as labels on every series (be careful with cardinality)
+    resource_to_telemetry_conversion:
+      enabled: true
+    # Retry config
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+  # Debug exporter — useful during bringup, remove in prod
+  debug:
+    verbosity: basic     # switch to 'detailed' to see every data point
+    sampling_initial: 2
+    sampling_thereafter: 500
+
+  # Loki via OTLP (Loki 3.x accepts OTLP natively at /otlp/v1/logs).
+  # Using otlphttp rather than the dedicated loki exporter — that one's
+  # deprecated in favor of OTLP-native.
+  otlphttp/loki:
+    logs_endpoint: http://loki:3100/otlp/v1/logs
+    tls:
+      insecure: true
+
+extensions:
+  # pprof — Go profiling endpoints for the collector process.
+  # curl localhost:1777/debug/pprof/{heap,goroutine,profile,trace}
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # health_check — simple HTTP liveness endpoint.
+  # curl localhost:13133/  -> 200 OK when the pipeline is healthy.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [pprof, health_check]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      # Push self-telemetry directly via OTLP to the collector's own OTLP
+      # receiver on loopback. Replaces the old scrape loop (pull reader on
+      # :8888 + prometheus/self receiver + metrics/self pipeline).
+      readers:
+        - periodic:
+            # Default is ~60s; we want 15s so rate(...[1m]) always has
+            # at least 2 samples to work with, matching the lab's cadence.
+            interval: 15000   # ms
+            exporter:
+              otlp:
+                protocol: grpc/protobuf
+                endpoint: http://localhost:4317
+
+  pipelines:
+    metrics:
+      receivers:  [otlp, prometheus/gnmic, prometheus/loki]
+      processors: [memory_limiter, batch, resource, attributes]
+      exporters:  [prometheusremotewrite, debug]
+
+    logs:
+      receivers:  [syslog, otlp]
+      processors: [memory_limiter, filter/drop-noise, batch, resource]
+      exporters:  [otlphttp/loki, debug]

@@ -1,6 +1,6 @@
 # gnmic → OTLP → OTel Collector → Prom remote_write lab
 
-Quick-and-dirty containerlab demonstrating a realistic network telemetry pipeline. Two independent flows converge at the OTel Collector and land in Grafana.
+Quick-and-dirty containerlab demonstrating a simnple network telemetry pipeline. Two independent flows converge at the OTel Collector and land in Grafana.
 
 ### Metrics (gNMI → Prom)
 

@@ -58,9 +58,7 @@ processors:
   # notification ts as the datapoint ts, so Prometheus sees the same ancient
   # point forever and drops the series past the 5m lookback-delta.
   # Rewriting the event timestamp to "now" makes every forwarded sample look
-  # fresh to Prometheus. This loses true sample-time fidelity, which is fine
-  # for lab gauges but would NOT be correct on a real fleet where you care
-  # about when a counter was actually sampled on-box.
+  # fresh to Prometheus. This loses true sample-time fidelity
   stamp-now:
     event-override-ts:
       precision: ns

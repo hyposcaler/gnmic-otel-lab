@@ -60,7 +60,7 @@ topology:
     # OpenTelemetry Collector - OTLP in, Prom remote_write out
     otelcol:
       kind: linux
-      image: otel/opentelemetry-collector-contrib:0.115.1
+      image: otel/opentelemetry-collector-contrib:0.150.1
       mgmt-ipv4: 172.22.22.30
       binds:
         - configs/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro

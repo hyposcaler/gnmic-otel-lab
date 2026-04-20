@@ -13,7 +13,7 @@ Quick-and-dirty containerlab demonstrating a realistic network telemetry pipelin
 ## Prereqs
 
 - Docker + containerlab installed
-- cEOS-lab image imported into Docker. Confirm with:
+- cEOS-lab image [imported](https://containerlab.dev/manual/kinds/ceos/) into Docker. Confirm with:
   ```
   docker images | grep ceos
   ```
@@ -23,7 +23,7 @@ Quick-and-dirty containerlab demonstrating a realistic network telemetry pipelin
 
 ```bash
 cd gnmic-otel-lab
-sudo containerlab deploy -t topo.clab.yml
+containerlab deploy -t topo.clab.yml
   ```
 
 ## Create traffic
@@ -47,7 +47,7 @@ To stop the traffic
 ## Teardown
 
 ```bash
-sudo containerlab destroy -t topo.clab.yml --cleanup
+containerlab destroy -t topo.clab.yml --cleanup
 ```
 
 ## Quick tshooting steps if things aren't working

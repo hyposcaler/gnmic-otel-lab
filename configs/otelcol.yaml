@@ -143,7 +143,7 @@ service:
             interval: 15000   # ms
             exporter:
               otlp:
-                protocol: grpc/protobuf
+                protocol: grpc
                 endpoint: http://localhost:4317
 
   pipelines:

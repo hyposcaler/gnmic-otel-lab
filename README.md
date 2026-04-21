@@ -12,7 +12,7 @@ Quick-and-dirty containerlab demonstrating a simnple network telemetry pipeline.
 
 ## Prereqs
 
-- Docker + containerlab installed
+- Docker + [containerlab installed](https://containerlab.dev/install/)
 - cEOS-lab image [imported](https://containerlab.dev/manual/kinds/ceos/) into Docker. Confirm with:
   ```
   docker images | grep ceos
@@ -149,9 +149,8 @@ UI at http://localhost:3000 (anonymous Admin enabled).
    `rate()` queries silently give wrong answers.
 
 2. **gnmic resource-tag-keys default is empty** all tags become
-   data-point attributes (Prom labels). We lift `source`, `target`,
-   and `subscription-name` to OTLP Resource attributes for saner
-   downstream filtering.
+   data-point attributes (Prom labels). We lift `source` and `target`
+   to OTLP Resource attributes for saner downstream filtering.
 
 3. **Collector memory_limiter goes first in the pipeline**, always.
    At the limit it *refuses* data, upstream retries, not graceful

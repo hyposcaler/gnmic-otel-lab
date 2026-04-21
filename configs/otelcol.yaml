@@ -26,10 +26,16 @@ receivers:
 
   # Syslog from network devices. RFC5424 on UDP 5514 (non-privileged so
   # the collector container doesn't need CAP_NET_BIND_SERVICE).
+  # The add operator tags every record with service.name so Loki surfaces
+  # a useful service_name label instead of "unknown_service".
   syslog:
     udp:
       listen_address: 0.0.0.0:5514
     protocol: rfc5424
+    operators:
+      - type: add
+        field: resource["service.name"]
+        value: network_syslog
 
   # Scrape Loki's own /metrics — distributor/ingester/querier internals.
   prometheus/loki:
@@ -67,14 +73,8 @@ processors:
         value: otelcol-contrib
         action: upsert
 
-  # Light attribute hygiene — drop high-cardinality junk if it shows up
-  attributes:
-    actions:
-      - key: gnmic_version
-        action: delete
-
   # Drop known-noisy log records before they hit Loki. OTTL conditions;
-  # any match drops the record. Extend this list as new noise surfaces.
+  # HAck to work around SRL expecting EDA TLS, prevents log spam
   filter/drop-noise:
     error_mode: ignore
     logs:
@@ -149,7 +149,7 @@ service:
   pipelines:
     metrics:
       receivers:  [otlp, prometheus/gnmic, prometheus/loki]
-      processors: [memory_limiter, batch, resource, attributes]
+      processors: [memory_limiter, batch, resource]
       exporters:  [prometheusremotewrite, debug]
 
     logs:

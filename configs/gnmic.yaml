@@ -54,6 +54,35 @@ subscriptions:
     # blob, which gnmic's OTLP exporter silently drops.
     encoding: proto
 
+  # BGP neighbor state. session-state is an enum (1=IDLE .. 6=ESTABLISHED);
+  # established-transitions counts flaps. Prefix counters are per AFI/SAFI.
+  # 30s sample is fine: BGP state changes trigger keepalives/updates anyway
+  # and the panels don't need finer resolution than that.
+  bgp-neighbors:
+    paths:
+      - openconfig:/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state
+      - openconfig:/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/established-transitions
+      - openconfig:/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi/state/prefixes/installed
+      - openconfig:/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/afi-safis/afi-safi/state/prefixes/received
+    mode: stream
+    stream-mode: sample
+    sample-interval: 30s
+    encoding: proto
+
+  # Interface oper/admin state + last-change timestamp. on-change gets us
+  # immediate flap events with no polling overhead; heartbeat-interval
+  # re-sends the current value every 60s so Prometheus never goes past its
+  # 5m lookback-delta and the series stays queryable during steady state.
+  intf-state:
+    paths:
+      - openconfig:/interfaces/interface/state/oper-status
+      - openconfig:/interfaces/interface/state/admin-status
+      - openconfig:/interfaces/interface/state/last-change
+    mode: stream
+    stream-mode: on-change
+    heartbeat-interval: 60s
+    encoding: proto
+
 # Event processors — applied to each gnmic event before it's handed to the output
 processors:
   # cEOS appears to freeze the gNMI Notification timestamp on unchanged leaves (e.g.
@@ -65,6 +94,34 @@ processors:
   stamp-now:
     event-override-ts:
       precision: ns
+
+  # oper-status/admin-status arrive as enum strings ("UP", "DOWN", ...).
+  # gnmic's OTLP output silently drops non-numeric values, so these never
+  # reach Prometheus. Two-step fix: string-replace each enum identity with
+  # its integer code, then cast the stringy result to int.
+  # Mapping follows the OpenConfig interfaces-oper-state-type ordering.
+  oper-state-to-int:
+    event-strings:
+      value-names:
+        - ".*oper-status$"
+        - ".*admin-status$"
+      transforms:
+        - replace: { apply-on: "value", old: "UP",               new: "1" }
+        - replace: { apply-on: "value", old: "DOWN",             new: "2" }
+        - replace: { apply-on: "value", old: "TESTING",          new: "3" }
+        - replace: { apply-on: "value", old: "UNKNOWN",          new: "4" }
+        - replace: { apply-on: "value", old: "DORMANT",          new: "5" }
+        - replace: { apply-on: "value", old: "NOT_PRESENT",      new: "6" }
+        - replace: { apply-on: "value", old: "LOWER_LAYER_DOWN", new: "7" }
+
+  # oper-state-to-int converts the text to numbers, but we still
+  # need to cast the metric to an int
+  oper-state-cast-int:
+    event-convert:
+      value-names:
+        - ".*oper-status$"
+        - ".*admin-status$"
+      type: int
 
 # OTLP output — native OTLP/gRPC to the OTel Collector
 outputs:
@@ -101,6 +158,8 @@ outputs:
       deployment.environment: lab
 
     event-processors:
+      - oper-state-to-int
+      - oper-state-cast-int
       - stamp-now
 
     num-workers: 2

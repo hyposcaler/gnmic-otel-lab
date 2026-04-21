@@ -12,6 +12,7 @@ Quick-and-dirty containerlab demonstrating a simnple network telemetry pipeline.
 
 ## Prereqs
 
+- Linux would be best here, containerlab does run on other platforms, but expect a little more friction
 - Docker + [containerlab installed](https://containerlab.dev/install/)
 - cEOS-lab image [imported](https://containerlab.dev/manual/kinds/ceos/) into Docker. Confirm with:
   ```

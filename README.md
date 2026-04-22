@@ -2,13 +2,11 @@
 
 Quick-and-dirty containerlab demonstrating a simnple network telemetry pipeline. Two independent flows converge at the OTel Collector and land in Grafana.
 
-### Metrics (gNMI → Prom)
+### Data flow
 
-![Metrics flow: gNMI sources through gnmic and the OTel Collector to Prometheus and Grafana](docs/images/metrics-flow.svg)
+Metrics come in two ways: a push-style gNMI pipeline (gnmic subscribes, both routers stream) and a pull-style SNMP pipeline (the `otelcol-snmp` agent polls cEOS). Both paths converge on the gateway OTel Collector, which also receives syslog directly from the routers and fans out to Prometheus (metrics) and Loki (logs). Grafana reads both stores.
 
-### Logs (syslog → Loki)
-
-![Logs flow: router syslog through the OTel Collector to Loki and Grafana](docs/images/logs-flow.svg)
+![Data flow: gNMI and SNMP metrics plus router syslog converging at the OTel Collector to Prometheus, Loki, and Grafana](docs/images/flow.svg)
 
 ## Prereqs
 
@@ -43,7 +41,12 @@ To stop the traffic
 ## Web UIs
 
 - **Prometheus** http://localhost:9090
-- **Grafana** http://localhost:3000 (anonymous Admin enabled, or admin/admin). A pre-provisioned dashboard **"gNMI → OTLP → Prom Lab"** (uid `gnmic-otel-lab`) shows data-plane rates, collector throughput, and remote-write health. Loki is wired in as a datasource; explore logs via Grafana's Explore tab.
+- **Alertmanager** http://localhost:9093 (null receiver — alerts are visible in the UI but not delivered anywhere)
+- **Grafana** http://localhost:3000 (anonymous Admin enabled, or admin/admin). Two pre-provisioned dashboards:
+  - **"Network data plane"** (uid `gnmic-otel-lab`): interface throughput and error rates from gNMI.
+  - **"Telemetry pipeline health"** (uid `gnmic-otel-lab-pipeline`): gNMI target state, collector throughput, Prom remote_write health, Loki ingest rate, and a live syslog stream.
+
+  Loki is wired in as a datasource; explore logs via Grafana's Explore tab.
 
 ## Teardown
 
@@ -55,7 +58,7 @@ containerlab destroy -t topo.clab.yml --cleanup
 
 Quick per-component health checks, roughly in the order data flows. Each one tells you whether that hop is alive and passing something downstream if a later check fails, the first failing hop is where to look.
 
-Of the seven internal components, only four expose ports to the host: **otelcol** (4317, 4318, 13133, 1777, 5514/udp), **prometheus** (9090), **loki** (3100), **grafana** (3000). gnmic and the routers are only reachable via `docker exec` or over the `clab-mgmt` bridge. gnmic's self-metrics and the collector's self-telemetry both flow through the pipeline into Prom, so **Prometheus is the canonical place to check internal-component health** not each container's own /metrics endpoint.
+Six internal components expose ports to the host: **otelcol** (4317, 4318, 13133, 1777), **otelcol-syslog** (5514/udp), **prometheus** (9090), **alertmanager** (9093), **loki** (3100), **grafana** (3000). Everything else (gnmic, otelcol-snmp, the routers, the hosts) is only reachable via `docker exec` or over the `clab-mgmt` bridge. gnmic's self-metrics and every collector's self-telemetry flow through the pipeline into Prom, so **Prometheus is the canonical place to check internal-component health** not each container's own /metrics endpoint. Each collector stamps its own `service.name` on its self-telemetry (`otelcol-gateway`, `otelcol-snmp`, `otelcol-syslog`), so filter on `service_name=` in PromQL to pick one out.
 
 ### Switches: cEOS and SR Linux (gNMI targets)
 
@@ -110,6 +113,54 @@ curl -s 'localhost:9090/api/v1/query?query=otelcol_exporter_sent_metric_points_t
 ```
 Both should be increasing. If accepted grows but sent doesn't, the exporter is wedged.
 
+### otelcol-snmp (SNMP agent)
+
+Polls cEOS on udp/161 and pushes OTLP to the gateway. No host-exposed ports, so health is checked via its self-telemetry in Prom (which lands with `service_name="otelcol-snmp"`) and via the SNMP-sourced metrics themselves (which land with `service_name="snmp-agent"`).
+
+Agent logs for poll errors:
+```bash
+docker logs --tail 50 clab-gnmic-otel-lab-otelcol-snmp 2>&1 | grep -iE "error|warn|refused"
+```
+
+Agent flow-through, via Prom:
+```bash
+curl -s -G 'localhost:9090/api/v1/query' \
+  --data-urlencode 'query=otelcol_receiver_accepted_metric_points_total{service_name="otelcol-snmp"}' | head -c 500; echo
+curl -s -G 'localhost:9090/api/v1/query' \
+  --data-urlencode 'query=otelcol_exporter_sent_metric_points_total{service_name="otelcol-snmp"}' | head -c 500; echo
+```
+Both should be increasing.
+
+A sample SNMP-sourced metric through the full chain:
+```bash
+curl -s -G 'localhost:9090/api/v1/query' \
+  --data-urlencode 'query=if_in_octets_bytes_total' | head -c 500; echo
+```
+Empty = SNMP poll is not reaching Prom. Values present per `interface_name` = chain healthy.
+
+### otelcol-syslog (syslog agent)
+
+Listens on 5514/udp for RFC5424 from the routers and forwards OTLP logs to the gateway. Self-telemetry lands in Prom with `service_name="otelcol-syslog"`; parsed logs end up in Loki tagged `service_name="network_syslog"`.
+
+Agent logs:
+```bash
+docker logs --tail 50 clab-gnmic-otel-lab-otelcol-syslog 2>&1 | grep -iE "error|warn|refused"
+```
+
+Agent flow-through, via Prom:
+```bash
+curl -s -G 'localhost:9090/api/v1/query' \
+  --data-urlencode 'query=otelcol_receiver_accepted_log_records_total{service_name="otelcol-syslog"}' | head -c 500; echo
+curl -s -G 'localhost:9090/api/v1/query' \
+  --data-urlencode 'query=otelcol_exporter_sent_log_records_total{service_name="otelcol-syslog"}' | head -c 500; echo
+```
+
+Verify parsed logs surface in Loki:
+```bash
+curl -s localhost:3100/loki/api/v1/label/service_name/values
+```
+Expect `network_syslog` in the list. Missing = either the routers aren't sending or the agent isn't parsing.
+
 ### Loki
 
 Ready + labels populated (proves logs are landing):
@@ -141,6 +192,25 @@ curl -s localhost:3000/api/health
 curl -s -u admin:admin localhost:3000/api/datasources | head -c 400; echo
 ```
 UI at http://localhost:3000 (anonymous Admin enabled).
+
+### Alertmanager
+
+Ready + cluster status:
+```bash
+curl -s localhost:9093/-/ready; echo
+curl -s localhost:9093/api/v2/status | head -c 300; echo
+```
+Expect `OK` and a `status: "ready"` cluster.
+
+Currently-firing alerts from Prom (rule evaluation), and what Alertmanager has received:
+```bash
+curl -s localhost:9090/api/v1/alerts | head -c 500; echo
+curl -s localhost:9093/api/v2/alerts | head -c 500; echo
+```
+The lab's rule set lives in `configs/prometheus-rules.yml`. `[]` from both in a healthy lab is expected (no rules firing). To confirm rules are loaded at all:
+```bash
+curl -s localhost:9090/api/v1/rules | head -c 300; echo
+```
 
 ## Notes
 

@@ -1,0 +1,315 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Collector health (1 = up)",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Binary up/down for each collection process (3 OTel collectors + gnmic), derived from whether their heartbeat metrics have landed any samples in the last 45s. Window is ~3x the push/scrape interval (15s) so a single missed sample doesn't flap the panel. gnmic is wedged under a synthetic service_name=\"gnmic\" label via label_replace since it doesn't emit OTel-style resource attributes. The label_replace(vector(0), ...) fallbacks ensure a 0 sample surfaces with the correct service_name when a process goes silent.",
+      "targets": [
+        {
+          "expr": "  max by (service_name) (count_over_time(otelcol_process_uptime_seconds_total[45s]) > bool 0)\nOR label_replace(max(count_over_time(gnmic_subscribe_number_of_received_subscribe_response_messages_total[45s])) > bool 0, \"service_name\", \"gnmic\", \"\", \"\")\nOR label_replace(vector(0), \"service_name\", \"otelcol-gateway\", \"\", \"\")\nOR label_replace(vector(0), \"service_name\", \"otelcol-snmp\",    \"\", \"\")\nOR label_replace(vector(0), \"service_name\", \"otelcol-syslog\",  \"\", \"\")\nOR label_replace(vector(0), \"service_name\", \"gnmic\",           \"\", \"\")",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "wideLayout": false,
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "text": { "titleSize": 14, "valueSize": 28 }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "gNMI target health (1 = up)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "gnmic_target_up",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "wideLayout": false,
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "text": { "titleSize": 14, "valueSize": 28 }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "BGP peer state (SNMP)",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "aristaBgp4V2PeerState enum via the SNMP pipeline: 1=idle 2=connect 3=active 4=opensent 5=openconfirm 6=established. Sourced from the otelcol-snmp agent polling cEOS. Mirrors the README 'eBGP session up' check.",
+      "targets": [
+        {
+          "expr": "bgp_peer_state_ratio",
+          "legendFormat": "{{target}} / {{bgp_peer}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "orange", "value": 2 },
+              { "color": "yellow", "value": 4 },
+              { "color": "green",  "value": 6 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": {
+              "1": { "text": "idle" },
+              "2": { "text": "connect" },
+              "3": { "text": "active" },
+              "4": { "text": "opensent" },
+              "5": { "text": "openconfirm" },
+              "6": { "text": "established" }
+            } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "wideLayout": false,
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "text": { "titleSize": 14, "valueSize": 22 }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "gNMI subscribe response rate (per target)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(gnmic_subscribe_number_of_received_subscribe_response_messages_total[1m])",
+          "legendFormat": "{{source}} {{subscription}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "gnmic OTLP output events/sec (sent vs failed)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "gnmic's own OTLP exporter counters. Sent should track the subscribe response rate; failed should be flat at 0. A climbing failed series means the gateway collector's OTLP receiver is refusing or unreachable.",
+      "targets": [
+        {
+          "expr": "rate(gnmic_otlp_output_number_of_sent_events_total[1m])",
+          "legendFormat": "{{output_name}} sent",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(gnmic_otlp_output_number_of_failed_events_total[1m]) or on() vector(0)",
+          "legendFormat": "failed",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-collector receiver throughput (metric points + log records / sec)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(otelcol_receiver_accepted_metric_points_total[1m])",
+          "legendFormat": "{{service_name}} / {{receiver}} metrics accepted",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(otelcol_receiver_refused_metric_points_total[1m])",
+          "legendFormat": "{{service_name}} / {{receiver}} metrics refused",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(otelcol_receiver_accepted_log_records_total[1m])",
+          "legendFormat": "{{service_name}} / {{receiver}} logs accepted",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prometheus remote_write receive rate (by response code)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(prometheus_http_requests_total{handler=\"/api/v1/write\"}[1m])",
+          "legendFormat": "{{code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-collector exporter send-failures/sec",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(otelcol_exporter_send_failed_metric_points_total[1m])",
+          "legendFormat": "{{service_name}} / {{exporter}} metrics",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(otelcol_exporter_send_failed_log_records_total[1m])",
+          "legendFormat": "{{service_name}} / {{exporter}} logs",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Loki ingest rate (lines/s by tenant)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(loki_distributor_lines_received_total[1m])",
+          "legendFormat": "{{tenant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps" }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Firing alerts",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Count of alerts currently in firing state. Prometheus evaluates the rules in configs/prometheus-rules.yml and publishes ALERTS{alertstate=\"firing\"} for each active alert. 0 = healthy; >0 = something is down or degraded, see the table on the right.",
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or on() vector(0)",
+          "legendFormat": "firing",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "auto",
+        "text": { "titleSize": 14, "valueSize": 60 }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Alert details (firing + pending)",
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Every ALERTS series the Prometheus rule engine currently has in firing or pending state. Empty = nothing is alerting. Alertmanager UI at :9093 shows the same set plus silence controls.",
+      "targets": [
+        {
+          "expr": "ALERTS",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "Value": true, "job": true, "instance": true },
+            "renameByName": { "alertname": "alert", "alertstate": "state", "severity": "severity" }
+          }
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["gnmic", "otel", "lab", "pipeline"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "",
+  "title": "Telemetry pipeline health",
+  "uid": "gnmic-otel-lab-pipeline",
+  "version": 8,
+  "weekStart": ""
+}

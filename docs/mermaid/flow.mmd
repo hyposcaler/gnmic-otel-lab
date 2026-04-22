@@ -1,0 +1,47 @@
+---
+config:
+  flowchart:
+    defaultRenderer: elk
+---
+%% End-to-end data flow: metrics (gnmic + SNMP) and logs (syslog) 
+%% Render: docker run --rm -u $(id -u):$(id -g) -v $PWD:/data \
+%%   minlag/mermaid-cli -i /data/docs/mermaid/flow.mmd -o /data/docs/images/flow.svg
+
+flowchart LR
+  subgraph routers["Network devices"]
+    ceos["cEOS<br/>gNMI :6030<br/>SNMP :161<br/>syslog"]
+    srl["SR Linux<br/>gNMI :57400<br/>syslog"]
+  end
+
+  subgraph agents["Collection agents"]
+    gnmic["gnmic<br/>gNMI subscribe"]
+    snmpcol["otelcol-snmp<br/>SNMP v2c poll"]
+    sysagent["otelcol-syslog<br/>RFC5424 udp 5514"]
+  end
+
+  otel["OTel Collector<br/>(gateway)"]
+  prom[("Prometheus")]
+  loki[("Loki")]
+  alertmgr["Alertmanager"]
+  grafana["Grafana"]
+
+  ceos -- "STREAM SAMPLE / ON-CHANGE" --> gnmic
+  srl  -- "STREAM SAMPLE / ON-CHANGE" --> gnmic
+  ceos -- "SNMP WALK/GET" --> snmpcol
+  ceos -. "syslog / udp 5514" .-> sysagent
+  srl  -. "syslog / udp 5514" .-> sysagent
+
+  gnmic    -- "OTLP / gRPC" --> otel
+  snmpcol  -- "OTLP / gRPC" --> otel
+  sysagent -. "OTLP / gRPC" .-> otel
+
+  otel -- "remote_write"  --> prom
+  otel -- "OTLP / HTTP"   --> loki
+
+  prom -- "alerts" --> alertmgr
+
+  prom --> grafana
+  loki --> grafana
+
+  classDef store fill:#eef,stroke:#557,stroke-width:1px;
+  class prom,loki store;

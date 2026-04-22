@@ -107,16 +107,22 @@ Expect `subscribing to target` lines and no `VALIDATION ERROR` / `connection ref
 
 Target health, via Prom (otelcol scrapes gnmic:7890 and forwards):
 ```bash
-curl -s 'localhost:9090/api/v1/query?query=gnmic_target_up' | head -c 400; echo
+curl -s 'localhost:9090/api/v1/query?query=gnmic_target_up' \
+| jq -r '.data.result[] | "\(.metric.name)\t\(.value[1])"' \
+| column -t -s $'\t' -N target,up
 ```
-Expect `"value":[...,"1"]` per target. `0` or no result = target unreachable from gnmic.
+Expect `1` per target. `0` or no row = target unreachable from gnmic.
 
-OTLP output counters; should be nonzero and growing:
+OTLP output counters, +events in the last 1m:
 ```bash
-curl -s 'localhost:9090/api/v1/query?query=gnmic_otlp_output_number_of_sent_events_total' | head -c 400; echo
-curl -s 'localhost:9090/api/v1/query?query=gnmic_otlp_output_number_of_failed_events_total' | head -c 400; echo
+for kind in sent failed; do
+  v=$(curl -sG localhost:9090/api/v1/query \
+    --data-urlencode "query=sum(increase(gnmic_otlp_output_number_of_${kind}_events_total[1m]))" \
+    | jq -r '.data.result[0].value[1] // "0" | tonumber | floor')
+  printf "%s\t%s\n" "${kind}/1m" "$v"
+done | column -t -s $'\t' -N kind,events
 ```
-Sent climbing + failed flat = healthy.
+`sent` > 0 and `failed` = 0 is healthy.
 
 ### OpenTelemetry Collector
 
@@ -125,12 +131,19 @@ Liveness:
 curl -s localhost:13133/
 ```
 
-Flow-through, via Prom (collector pushes its own telemetry via OTLP loopback):
+Flow-through, via Prom (collector pushes its own telemetry via OTLP loopback). +points in the last 1m, per service and receiver/exporter:
 ```bash
-curl -s 'localhost:9090/api/v1/query?query=otelcol_receiver_accepted_metric_points_total' | head -c 400; echo
-curl -s 'localhost:9090/api/v1/query?query=otelcol_exporter_sent_metric_points_total'     | head -c 400; echo
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (service_name, receiver) (increase(otelcol_receiver_accepted_metric_points_total[1m]))' \
+| jq -r '.data.result[] | "\(.metric.service_name)\t\(.metric.receiver)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N service,receiver,points/1m
+
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (service_name, exporter) (increase(otelcol_exporter_sent_metric_points_total[1m]))' \
+| jq -r '.data.result[] | "\(.metric.service_name)\t\(.metric.exporter)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N service,exporter,points/1m
 ```
-Both should be increasing. If accepted grows but sent doesn't, the exporter is wedged.
+All rows nonzero and receiver totals ≈ exporter totals per service is healthy. Any 0 row = that hop stalled in the last minute. If accepted grows but sent doesn't, the exporter is wedged.
 
 ### otelcol-snmp (SNMP agent)
 
@@ -141,14 +154,19 @@ Agent logs for poll errors:
 docker logs --tail 50 clab-gnmic-otel-lab-otelcol-snmp 2>&1 | grep -iE "error|warn|refused"
 ```
 
-Agent flow-through, via Prom:
+Agent flow-through, via Prom. +points in the last 1m:
 ```bash
-curl -s -G 'localhost:9090/api/v1/query' \
-  --data-urlencode 'query=otelcol_receiver_accepted_metric_points_total{service_name="otelcol-snmp"}' | head -c 500; echo
-curl -s -G 'localhost:9090/api/v1/query' \
-  --data-urlencode 'query=otelcol_exporter_sent_metric_points_total{service_name="otelcol-snmp"}' | head -c 500; echo
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (receiver) (increase(otelcol_receiver_accepted_metric_points_total{service_name="otelcol-snmp"}[1m]))' \
+| jq -r '.data.result[] | "rcv:\(.metric.receiver)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N stream,points/1m
+
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (exporter) (increase(otelcol_exporter_sent_metric_points_total{service_name="otelcol-snmp"}[1m]))' \
+| jq -r '.data.result[] | "exp:\(.metric.exporter)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N stream,points/1m
 ```
-Both should be increasing.
+Both should be nonzero and roughly equal.
 
 A sample SNMP-sourced metric through the full chain:
 ```bash
@@ -166,12 +184,17 @@ Agent logs:
 docker logs --tail 50 clab-gnmic-otel-lab-otelcol-syslog 2>&1 | grep -iE "error|warn|refused"
 ```
 
-Agent flow-through, via Prom:
+Agent flow-through, via Prom. +log records in the last 1m:
 ```bash
-curl -s -G 'localhost:9090/api/v1/query' \
-  --data-urlencode 'query=otelcol_receiver_accepted_log_records_total{service_name="otelcol-syslog"}' | head -c 500; echo
-curl -s -G 'localhost:9090/api/v1/query' \
-  --data-urlencode 'query=otelcol_exporter_sent_log_records_total{service_name="otelcol-syslog"}' | head -c 500; echo
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (receiver) (increase(otelcol_receiver_accepted_log_records_total{service_name="otelcol-syslog"}[1m]))' \
+| jq -r '.data.result[] | "rcv:\(.metric.receiver)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N stream,records/1m
+
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum by (exporter) (increase(otelcol_exporter_sent_log_records_total{service_name="otelcol-syslog"}[1m]))' \
+| jq -r '.data.result[] | "exp:\(.metric.exporter)\t\(.value[1]|tonumber|floor)"' \
+| column -t -s $'\t' -N stream,records/1m
 ```
 
 Verify parsed logs surface in Loki:
@@ -189,10 +212,13 @@ curl -s localhost:3100/loki/api/v1/labels | head -c 300; echo
 ```
 (A brief `Ingester not ready: waiting for 15s after being ready` right after bring-up is normal.)
 
-Bytes received, via Prom:
+Log lines received, via Prom. +lines in the last 1m (lines respond faster than the bytes counter, which Loki updates in batches):
 ```bash
-curl -s 'localhost:9090/api/v1/query?query=loki_distributor_bytes_received_total' | head -c 400; echo
+curl -sG localhost:9090/api/v1/query \
+  --data-urlencode 'query=sum(increase(loki_distributor_lines_received_total[1m]))' \
+| jq -r '.data.result[] | "lines/1m: \(.value[1]|tonumber|floor)"'
 ```
+Nonzero = logs are landing; 0 = Loki's distributor isn't receiving.
 
 ### Prometheus
 

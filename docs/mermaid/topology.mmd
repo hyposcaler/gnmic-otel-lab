@@ -1,0 +1,23 @@
+---
+config:
+  flowchart:
+    defaultRenderer: elk
+---
+%% Network topology: four nodes in a line, all link detail on the edges.
+%% Render: docker run --rm -u $(id -u):$(id -g) -v $PWD:/data \
+%%   minlag/mermaid-cli -i /data/docs/mermaid/topology.mmd -o /data/docs/images/topology.svg
+
+flowchart LR
+  H1["host1<br/>10.0.1.2/30"]
+  C1["ceos1<br/>Arista cEOS<br/>AS 65001"]
+  S1["srl1<br/>Nokia SR Linux<br/>AS 65002"]
+  H2["host2<br/>10.0.2.2/30"]
+
+  H1 <-- "eth1 / Et1<br/>10.0.1.0/30" --> C1
+  C1 <-- "Et2 / e1-1<br/>10.0.23.0/30<br/>eBGP 65001 / 65002" --> S1
+  S1 <-- "e1-2 / eth1<br/>10.0.2.0/30" --> H2
+
+  classDef router fill:#e8f0ff,stroke:#3366cc,stroke-width:1px;
+  classDef host   fill:#f4f4f4,stroke:#888,stroke-width:1px;
+  class C1,S1 router;
+  class H1,H2 host;

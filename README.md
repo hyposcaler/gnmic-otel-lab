@@ -12,6 +12,15 @@ Metrics come in two ways: a push-style gNMI pipeline (gnmic subscribes, both rou
 
 ![Data flow: gNMI and SNMP metrics plus router syslog converging at the OTel Collector to Prometheus, Loki, and Grafana](docs/images/flow.svg)
 
+### Network topology
+
+Four nodes in a line on the data plane: `host1` ↔ `ceos1` ↔ `srl1` ↔ `host2`, with a single eBGP session between ceos1 (AS 65001) and srl1 (AS 65002) over `10.0.23.0/30`. Host subnets are `/30`s on either end. All nodes also share the `clab-mgmt` bridge at `172.22.22.0/24`, which is how the telemetry stack reaches the routers for gNMI, SNMP, and syslog.
+
+![Network topology: host1 and host2 bookending an eBGP peering between Arista cEOS (AS 65001) and Nokia SR Linux (AS 65002), with interface names and /30 subnets on each link](docs/images/topology.svg)
+
+User pass for ceos1 is `admin`/`admin`
+user pass for srl1 is `admin`/`NokiaSrl1!`
+
 ## Prereqs
 
 - Linux would be best here, containerlab does run on other platforms, but expect a little more friction

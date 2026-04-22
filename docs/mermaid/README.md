@@ -5,6 +5,7 @@ Source files for the diagrams embedded in the top-level `README.md`.
 | Source | Rendered output |
 | ------ | --------------- |
 | `flow.mmd` | `../images/flow.svg` |
+| `topology.mmd` | `../images/topology.svg` |
 
 ## Rendering
 
@@ -13,8 +14,13 @@ The [`minlag/mermaid-cli`](https://hub.docker.com/r/minlag/mermaid-cli) image sh
 From the repo root:
 
 ```bash
+# flow diagram (gNMI / SNMP / syslog pipeline)
 docker run --rm -u $(id -u):$(id -g) -v "$PWD":/data \
   minlag/mermaid-cli -i /data/docs/mermaid/flow.mmd -o /data/docs/images/flow.svg
+
+# network topology (host1 / ceos1 / srl1 / host2)
+docker run --rm -u $(id -u):$(id -g) -v "$PWD":/data \
+  minlag/mermaid-cli -i /data/docs/mermaid/topology.mmd -o /data/docs/images/topology.svg
 ```
 
 `-u $(id -u):$(id -g)` keeps the output file owned by you instead of root.

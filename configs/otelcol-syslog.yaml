@@ -1,0 +1,86 @@
+################################################################
+# OpenTelemetry Collector (agent) - RFC5424 syslog ingest only
+# Routers send UDP 5514 directly here; this agent parses syslog
+# and forwards OTLP logs to the main "gateway" collector. Mirrors
+# the agent/gateway pattern already used by otelcol-snmp.
+################################################################
+
+receivers:
+  # Syslog from network devices. RFC5424 on UDP 5514 (non-privileged so
+  # the container doesn't need CAP_NET_BIND_SERVICE). The add operator
+  # tags every record with service.name so Loki surfaces a useful
+  # service_name label instead of "unknown_service".
+  syslog:
+    udp:
+      listen_address: 0.0.0.0:5514
+    protocol: rfc5424
+    operators:
+      - type: add
+        field: resource["service.name"]
+        value: network_syslog
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Tag every log record so the gateway and Prom/Loki downstream can tell
+  # this agent's traffic apart. Gateway uses `insert` on telemetry.collector
+  # so these values survive the fan-out.
+  resource:
+    attributes:
+      - { key: telemetry.collector,    value: otelcol-syslog,    action: upsert }
+      - { key: service.namespace,      value: network-telemetry, action: upsert }
+      - { key: deployment.environment, value: lab,               action: upsert }
+      - { key: source,                 value: syslog,            action: upsert }
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlp_grpc/gateway:
+    endpoint: otelcol:4317
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+  debug:
+    verbosity: basic
+    sampling_initial: 2
+    sampling_thereafter: 500
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    # Override the default service.name so Prom can distinguish this
+    # agent's otelcol_* metrics from the gateway and the SNMP agent.
+    resource:
+      service.name: otelcol-syslog
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      # Push self-telemetry via OTLP to the gateway, which fans out to Prom.
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: grpc
+                endpoint: http://otelcol:4317
+
+  pipelines:
+    logs:
+      receivers:  [syslog]
+      processors: [memory_limiter, resource, batch]
+      exporters:  [otlp_grpc/gateway, debug]

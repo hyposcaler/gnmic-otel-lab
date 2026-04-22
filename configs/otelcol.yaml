@@ -24,19 +24,6 @@ receivers:
           static_configs:
             - targets: ['gnmic:7890']
 
-  # Syslog from network devices. RFC5424 on UDP 5514 (non-privileged so
-  # the collector container doesn't need CAP_NET_BIND_SERVICE).
-  # The add operator tags every record with service.name so Loki surfaces
-  # a useful service_name label instead of "unknown_service".
-  syslog:
-    udp:
-      listen_address: 0.0.0.0:5514
-    protocol: rfc5424
-    operators:
-      - type: add
-        field: resource["service.name"]
-        value: network_syslog
-
   # Scrape Loki's own /metrics — distributor/ingester/querier internals.
   prometheus/loki:
     config:
@@ -66,20 +53,24 @@ processors:
   # Keep this processor around for future delta-sourced data.
   # cumulativetodelta: {}
 
-  # Enrich/normalize resource attributes
+  # Enrich/normalize resource attributes. `insert` (not `upsert`) so that
+  # upstream collectors/agents that already stamped telemetry.collector (e.g.
+  # the otelcol-snmp agent) keep their value; only unlabeled traffic inherits
+  # this default.
   resource:
     attributes:
       - key: telemetry.collector
         value: otelcol-contrib
-        action: upsert
+        action: insert
 
-  # Drop known-noisy log records before they hit Loki. OTTL conditions;
-  # HAck to work around SRL expecting EDA TLS, prevents log spam
+  # Drop known-noisy log records before they hit Loki. SR Linux floods
+  # "Unable to retrieve TLS profile 'EDA'" at a high rate in this lab
+  # because no EDA controller is present; filtered centrally on the
+  # gateway so the edge syslog agent stays generic.
   filter/drop-noise:
     error_mode: ignore
     logs:
       log_record:
-        # SR Linux boot-time warning — EDA TLS profile not configured in lab
         - 'IsMatch(body, "Unable to retrieve TLS profile .EDA.")'
 
 exporters:
@@ -129,6 +120,11 @@ extensions:
 service:
   extensions: [pprof, health_check]
   telemetry:
+    # Override default service.name so this gateway's self-telemetry is
+    # distinguishable in Prom from the two agent collectors, which also
+    # push their metrics here.
+    resource:
+      service.name: otelcol-gateway
     logs:
       level: info
     metrics:
@@ -152,7 +148,9 @@ service:
       processors: [memory_limiter, batch, resource]
       exporters:  [prometheusremotewrite, debug]
 
+    # Syslog arrives via OTLP from the otelcol-syslog agent. filter/drop-noise
+    # runs on the gateway so the drop-list is centralized.
     logs:
-      receivers:  [syslog, otlp]
+      receivers:  [otlp]
       processors: [memory_limiter, filter/drop-noise, batch, resource]
       exporters:  [otlphttp/loki, debug]

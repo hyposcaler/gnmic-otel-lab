@@ -1,0 +1,282 @@
+################################################################
+# OpenTelemetry Collector (agent) - SNMP polling of ceos1 only
+# Exports OTLP to the main "gateway" collector, which fans out
+# to Prometheus and Loki. See topo.clab.yml: otelcol-snmp.
+#
+# Rough parity with the gnmic subscriptions against ceos1:
+#   openconfig interface counters   -> IF-MIB ifHC* / ifIn/Out*
+#   openconfig oper/admin-status    -> IF-MIB ifOperStatus / ifAdminStatus
+#   openconfig components memory    -> HOST-RESOURCES-MIB hrStorageSize/Used
+#   openconfig bgp session-state    -> ARISTA-BGP4V2-MIB aristaBgp4V2PeerState
+#   openconfig bgp xn-transitions   -> ARISTA-BGP4V2-MIB aristaBgp4V2PeerFsmEstablishedTransitions
+#   openconfig bgp prefixes in/acc  -> ARISTA-BGP4V2-MIB aristaBgp4V2PrefixInPrefixes / InPrefixesAccepted
+#
+# BGP OIDs come from ARISTA-BGP4V2-MIB (Arista's port of draft-ietf-idr-
+# bgp4-mibv2, rooted at enterprises.30065.4.1). This gives us prefix counters
+# per AFI/SAFI that the vanilla BGP4-MIB can't. Trade-off: index is
+# {PeerInstance, RemoteAddrType, RemoteAddr} for the peer table, extended
+# with {Afi, Safi} for prefix gauges — so `indexed_value_prefix` labels end
+# up looking like "peer-1.1.4.10.0.23.2" (instance=1, ipv4=1, len=4,
+# addr=10.0.23.2) or "peer-afisafi-1.1.4.10.0.23.2.1.1" (+ afi=1 ipv4,
+# safi=1 unicast). We use a transform to fix this up
+################################################################
+
+receivers:
+  snmp/ceos1:
+    collection_interval: 30s
+    endpoint: udp://ceos1:161
+    version: v2c
+    community: public
+
+    resource_attributes:
+      # Resolved from the ifName column; every interface-keyed metric below
+      # shares the ifIndex-indexed rows, so datapoints get labeled per port.
+      interface.name:
+        description: "Interface name (IF-MIB::ifName)"
+        oid: "1.3.6.1.2.1.31.1.1.1.1"
+
+      # aristaBgp4V2PeerTable index: {PeerInstance, RemoteAddrType, RemoteAddr}.
+      # indexed_value_prefix pastes the raw OID-suffix after the prefix, so
+      # a default-instance IPv4 peer 10.0.23.2 surfaces as "peer-1.1.4.10.0.23.2".
+      bgp.peer:
+        description: "Arista BGP peer (PeerInstance.AddrType.AddrLen.Addr)"
+        indexed_value_prefix: "peer-"
+
+      # Prefix-gauge rows add {Afi, Safi} onto the peer index, so the label
+      # ends up as "peer-afisafi-1.1.4.10.0.23.2.1.1" for ipv4-unicast on
+      # peer 10.0.23.2 in the default instance.
+      bgp.peer.afi_safi:
+        description: "Arista BGP peer + AFI/SAFI (PrefixGauges index)"
+        indexed_value_prefix: "peer-afisafi-"
+
+      # hrStorageDescr gives each hrStorageTable row a human label on EOS:
+      # "RAM", "RAM (Buffers)", "RAM (Cache)", "Flash", "Tmp", "Root",
+      # "Log", "Core", "RAM (Unavailable)". Lets us filter per storage type
+      # (e.g. hr_storage_descr="RAM") in PromQL.
+      hr.storage.descr:
+        description: "HOST-RESOURCES-MIB hrStorageDescr"
+        oid: "1.3.6.1.2.1.25.2.3.1.3"
+
+    metrics:
+      # -- Interface counters (64-bit ifXTable where available) -----------
+      if.in.octets:
+        unit: "By"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.31.1.1.1.6"    # ifHCInOctets
+            resource_attributes: [interface.name]
+      if.out.octets:
+        unit: "By"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.31.1.1.1.10"   # ifHCOutOctets
+            resource_attributes: [interface.name]
+      if.in.ucast_pkts:
+        unit: "{packets}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.31.1.1.1.7"    # ifHCInUcastPkts
+            resource_attributes: [interface.name]
+      if.out.ucast_pkts:
+        unit: "{packets}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.31.1.1.1.11"   # ifHCOutUcastPkts
+            resource_attributes: [interface.name]
+      if.in.errors:
+        unit: "{errors}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.14"      # ifInErrors
+            resource_attributes: [interface.name]
+      if.out.errors:
+        unit: "{errors}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.20"      # ifOutErrors
+            resource_attributes: [interface.name]
+      if.in.discards:
+        unit: "{discards}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.13"      # ifInDiscards
+            resource_attributes: [interface.name]
+      if.out.discards:
+        unit: "{discards}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.19"      # ifOutDiscards
+            resource_attributes: [interface.name]
+
+      # -- Interface state (enum gauges; values match IF-MIB ordering) ----
+      # ifOperStatus:  1=up 2=down 3=testing 4=unknown 5=dormant 6=notPresent 7=lowerLayerDown
+      # ifAdminStatus: 1=up 2=down 3=testing
+      if.oper.status:
+        unit: "1"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.8"
+            resource_attributes: [interface.name]
+      if.admin.status:
+        unit: "1"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.7"
+            resource_attributes: [interface.name]
+
+      # -- System storage / memory (HOST-RESOURCES-MIB hrStorageTable) ----
+      # Walks all rows (RAM/Buffers/Cache/Flash/Tmp/Root/Log/Core/...). Each
+      # metric is in "allocation units" which on cEOS is 1024 bytes for the
+      # RAM rows; multiply by hr.storage.allocation.units to convert to By,
+      # or in PromQL filter on hr_storage_descr for memory parity.
+      hr.storage.size:
+        unit: "{units}"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.25.2.3.1.5"      # hrStorageSize
+            resource_attributes: [hr.storage.descr]
+      hr.storage.used:
+        unit: "{units}"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.25.2.3.1.6"      # hrStorageUsed
+            resource_attributes: [hr.storage.descr]
+      hr.storage.allocation.units:
+        unit: "By"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.2.1.25.2.3.1.4"      # hrStorageAllocationUnits
+            resource_attributes: [hr.storage.descr]
+
+      # -- BGP peer health (ARISTA-BGP4V2-MIB) ----------------------------
+      # aristaBgp4V2PeerState enum: 1=idle 2=connect 3=active 4=opensent
+      #                              5=openconfirm 6=established
+      # Same semantics as OpenConfig session-state, so parity is direct.
+      bgp.peer.state:
+        unit: "1"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.4.1.30065.4.1.1.2.1.13"    # aristaBgp4V2PeerState
+            resource_attributes: [bgp.peer]
+      bgp.peer.established.transitions:
+        unit: "{transitions}"
+        sum: { aggregation: cumulative, monotonic: true, value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.4.1.30065.4.1.1.7.1.5"     # aristaBgp4V2PeerFsmEstablishedTransitions
+            resource_attributes: [bgp.peer]
+
+      # -- BGP prefix counts per AFI/SAFI (ARISTA-BGP4V2-MIB) -------------
+      # Gauges (not counters): current RIB sizes, match OpenConfig semantics
+      # for installed/received. prefixes-installed has no exact SNMP twin;
+      # PrefixInPrefixesAccepted (eligible for Loc-Rib) is the closest.
+      bgp.peer.prefixes.received:
+        unit: "{prefixes}"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.4.1.30065.4.1.1.8.1.3"     # aristaBgp4V2PrefixInPrefixes
+            resource_attributes: [bgp.peer.afi_safi]
+      bgp.peer.prefixes.installed:
+        unit: "{prefixes}"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.4.1.30065.4.1.1.8.1.4"     # aristaBgp4V2PrefixInPrefixesAccepted
+            resource_attributes: [bgp.peer.afi_safi]
+      bgp.peer.prefixes.advertised:
+        unit: "{prefixes}"
+        gauge: { value_type: int }
+        column_oids:
+          - oid: "1.3.6.1.4.1.30065.4.1.1.8.1.5"     # aristaBgp4V2PrefixOutPrefixes
+            resource_attributes: [bgp.peer.afi_safi]
+
+processors:
+  # memory_limiter first, same pattern as the gateway collector.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Tag everything from this agent so the gateway (and Prom) can tell
+  # SNMP-sourced metrics apart from gnmic-sourced ones.
+  resource:
+    attributes:
+      - { key: telemetry.collector,    value: otelcol-snmp,      action: upsert }
+      - { key: service.name,           value: snmp-agent,        action: upsert }
+      - { key: service.namespace,      value: network-telemetry, action: upsert }
+      - { key: deployment.environment, value: lab,               action: upsert }
+      - { key: source,                 value: snmp,              action: upsert }
+      - { key: target,                 value: ceos1,             action: upsert }
+
+  # Clean up the verbose OID-suffix labels that snmpreceiver produces for
+  # BGP resource attributes. IPv4-peer-only; the lab has no IPv6 peers.
+  #   "bgp.peer" goes from "peer-.1.1.4.10.0.23.2" to "10.0.23.2".
+  #   "bgp.peer.afi_safi" (e.g. "peer-afisafi-.1.1.4.10.0.23.2.1.1") is split
+  #   into separate bgp.peer / bgp.afi / bgp.safi attributes so PromQL can
+  #   group/sum across AFI/SAFI naturally, then the composite key is dropped.
+  transform/bgp:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          # Peer-table rows: strip "peer-." and the {instance}.{addrType}.{addrLen} prefix
+          - 'replace_pattern(attributes["bgp.peer"], "^peer-\\.\\d+\\.\\d+\\.\\d+\\.", "") where attributes["bgp.peer"] != nil'
+
+          # PrefixGauges rows: split the composite label into three clean attributes
+          - 'set(attributes["bgp.peer"], ExtractPatterns(attributes["bgp.peer.afi_safi"], "^peer-afisafi-\\.\\d+\\.\\d+\\.\\d+\\.(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\.(?P<afi>\\d+)\\.(?P<safi>\\d+)$")["ip"]) where attributes["bgp.peer.afi_safi"] != nil'
+          - 'set(attributes["bgp.afi"], ExtractPatterns(attributes["bgp.peer.afi_safi"], "^peer-afisafi-\\.\\d+\\.\\d+\\.\\d+\\.(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\.(?P<afi>\\d+)\\.(?P<safi>\\d+)$")["afi"]) where attributes["bgp.peer.afi_safi"] != nil'
+          - 'set(attributes["bgp.safi"], ExtractPatterns(attributes["bgp.peer.afi_safi"], "^peer-afisafi-\\.\\d+\\.\\d+\\.\\d+\\.(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\.(?P<afi>\\d+)\\.(?P<safi>\\d+)$")["safi"]) where attributes["bgp.peer.afi_safi"] != nil'
+          - 'delete_key(attributes, "bgp.peer.afi_safi") where attributes["bgp.peer.afi_safi"] != nil'
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  # Ship everything to the gateway's OTLP gRPC receiver. The gateway then
+  # fans out to Prometheus (remote_write) and Loki (for logs; unused here).
+  otlp_grpc/gateway:
+    endpoint: otelcol:4317
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+  debug:
+    verbosity: basic
+    sampling_initial: 2
+    sampling_thereafter: 500
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    # Override the default service.name on self-telemetry so Prom can tell
+    # this agent's otelcol_* metrics apart from the gateway and the other
+    # agent (otherwise they all land as service_name="otelcol-contrib").
+    resource:
+      service.name: otelcol-snmp
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      # Push self-telemetry via OTLP to the gateway's OTLP receiver, which
+      # then fans out to Prom. Mirrors the gateway's self-telemetry pattern
+      # but points at a remote endpoint instead of loopback.
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: grpc
+                endpoint: http://otelcol:4317
+
+  pipelines:
+    metrics:
+      receivers:  [snmp/ceos1]
+      processors: [memory_limiter, resource, transform/bgp, batch]
+      exporters:  [otlp_grpc/gateway, debug]

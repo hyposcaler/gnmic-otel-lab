@@ -10,26 +10,16 @@ topology:
       image: ghcr.io/srl-labs/network-multitool
 
   nodes:
-    # ---- Routers ------------------------------------------------------
-    # Arista cEOS — eBGP AS 65001, peer of srl1
     ceos1:
       kind: arista_ceos
       image: ceos:4.30.10M
       mgmt-ipv4: 172.22.22.11
       startup-config: configs/ceos1-startup.cfg
-
-    # Nokia SR Linux — eBGP AS 65002, peer of ceos1. gNMI on :57400 (TLS).
-    # Pinned to 24.10.1: routing-policy schema changed in 26.x (match prefix-set
-    # was restructured), so this tag keeps us compatible with the srl-labs
-    # reference config patterns.
     srl1:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:26.3.1
       mgmt-ipv4: 172.22.22.12
       startup-config: configs/srl1-startup.cli
-
-    # ---- Hosts (multitool image ships iperf3) -------------------------
-    # host1 — iperf3 server, attached to ceos1.
     host1:
       kind: linux
       mgmt-ipv4: 172.22.22.31
@@ -37,8 +27,6 @@ topology:
         - ip address add 10.0.1.2/30 dev eth1
         - ip route add 10.0.2.0/30 via 10.0.1.1 dev eth1
         - iperf3 -s -p 5201 -D
-
-    # host2 — iperf3 client, attached to srl1. Drives via /config/iperf.sh.
     host2:
       kind: linux
       mgmt-ipv4: 172.22.22.32
@@ -48,7 +36,6 @@ topology:
         - ip address add 10.0.2.2/30 dev eth1
         - ip route add 10.0.1.0/30 via 10.0.2.1 dev eth1
 
-    # gnmic - gNMI collector, exports OTLP
     gnmic:
       kind: linux
       image: ghcr.io/openconfig/gnmic:latest
@@ -57,7 +44,6 @@ topology:
         - configs/gnmic.yaml:/app/gnmic.yaml:ro
       cmd: --config /app/gnmic.yaml subscribe
 
-    # OpenTelemetry Collector - OTLP in, Prom remote_write out
     otelcol:
       kind: linux
       image: otel/opentelemetry-collector-contrib:0.150.1
@@ -69,9 +55,23 @@ topology:
         - 4318:4318   # OTLP HTTP
         - 1777:1777   # pprof — Go profiling
         - 13133:13133 # health_check — HTTP liveness
+
+    otelcol-snmp:
+      kind: linux
+      image: otel/opentelemetry-collector-contrib:0.150.1
+      mgmt-ipv4: 172.22.22.35
+      binds:
+        - configs/otelcol-snmp.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+    otelcol-syslog:
+      kind: linux
+      image: otel/opentelemetry-collector-contrib:0.150.1
+      mgmt-ipv4: 172.22.22.36
+      binds:
+        - configs/otelcol-syslog.yaml:/etc/otelcol-contrib/config.yaml:ro
+      ports:
         - 5514:5514/udp  # syslog (RFC5424) from routers
 
-    # Loki - log store. Collector pushes via OTLP; Grafana reads.
     loki:
       kind: linux
       image: grafana/loki:3.2.0
@@ -82,7 +82,6 @@ topology:
       ports:
         - 3100:3100
 
-    # Prometheus - receives remote_write, scrape-disabled for most things
     prometheus:
       kind: linux
       image: prom/prometheus:v3.11.2
@@ -97,7 +96,6 @@ topology:
       ports:
         - 9090:9090
 
-    # Grafana
     grafana:
       kind: linux
       image: grafana/grafana:11.3.1
@@ -113,6 +111,6 @@ topology:
         - 3000:3000
 
   links:
-    - endpoints: ["host1:eth1", "ceos1:eth1"]     # 10.0.1.0/30 — host1 <-> ceos1
-    - endpoints: ["ceos1:eth2", "srl1:e1-1"]      # 10.0.23.0/30 — eBGP transit
-    - endpoints: ["srl1:e1-2", "host2:eth1"]      # 10.0.2.0/30 — srl1 <-> host2
+    - endpoints: ["host1:eth1", "ceos1:eth1"]
+    - endpoints: ["ceos1:eth2", "srl1:e1-1"]
+    - endpoints: ["srl1:e1-2", "host2:eth1"]

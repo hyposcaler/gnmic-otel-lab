@@ -1,0 +1,44 @@
+################################################################
+# Lab alert rules. Covers three broad failure modes:
+#   1. A gNMI target we're trying to collect from is unreachable.
+#   2. A BGP peer drops out of Established (via the SNMP pipeline).
+#   3. A collector is failing to export data downstream.
+################################################################
+
+groups:
+  - name: lab-telemetry
+    interval: 30s
+    rules:
+      # gnmic_target_up goes 0 when gnmic can't establish or keep the
+      # subscription. Firing immediately since we only have two targets
+      # and either one being down is a lab-breaking event.
+      - alert: GnmicTargetDown
+        expr: gnmic_target_up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'gnmic target {{ $labels.name }} is DOWN'
+          description: 'gnmic cannot reach target {{ $labels.name }} ({{ $labels.source }}) for >1m.'
+
+      # Arista BGP4V2 peer state enum: 6 = Established. Anything else
+      # means the session is not up.
+      - alert: BgpPeerNotEstablished
+        expr: bgp_peer_state_ratio != 6
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'BGP peer {{ $labels.bgp_peer }} on {{ $labels.target }} not Established'
+          description: 'Peer state = {{ $value }} (6 = Established) for >2m.'
+
+      # Any collector failing to export. Caught early so a wedged queue or
+      # downstream outage is visible.
+      - alert: CollectorExporterFailing
+        expr: sum by (service_name, exporter) (rate(otelcol_exporter_send_failed_metric_points_total[2m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.service_name }} exporter {{ $labels.exporter }} failing sends'
+          description: 'Failure rate {{ $value | printf "%.2f" }} points/s over 2m.'

@@ -88,6 +88,7 @@ topology:
       mgmt-ipv4: 172.22.22.40
       binds:
         - configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+        - configs/prometheus-rules.yml:/etc/prometheus/rules/prometheus-rules.yml:ro
       cmd: >
         --config.file=/etc/prometheus/prometheus.yml
         --web.enable-remote-write-receiver
@@ -95,6 +96,19 @@ topology:
         --storage.tsdb.retention.time=6h
       ports:
         - 9090:9090
+
+    # Alertmanager — receives alerts from Prometheus, routes/dedupes/fires
+    # notifications. Null receiver only in this lab; visit :9093 for the
+    # alert state + silences UI.
+    alertmanager:
+      kind: linux
+      image: prom/alertmanager:v0.32.0
+      mgmt-ipv4: 172.22.22.70
+      binds:
+        - configs/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      cmd: --config.file=/etc/alertmanager/alertmanager.yml
+      ports:
+        - 9093:9093
 
     grafana:
       kind: linux

@@ -1,0 +1,16 @@
+################################################################
+# Alertmanager - minimal lab config
+# Prometheus fires alerts at alertmanager:9093; here we route
+# everything to a null receiver so alerts are visible in the AM
+# UI (http://localhost:9093) without needing Slack/email/etc.
+################################################################
+
+route:
+  receiver: null-receiver
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: null-receiver

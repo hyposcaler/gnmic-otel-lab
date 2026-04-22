@@ -1,6 +1,10 @@
 # gnmic → OTLP → OTel Collector → Prom remote_write lab
 
-Quick-and-dirty containerlab demonstrating a simnple network telemetry pipeline. Two independent flows converge at the OTel Collector and land in Grafana.
+Quick-and-dirty containerlab topology demonstrating what a network telemetry pipeline using OTel might look like. Arista cEOS and SR Linux stand in as the network nodes. SR Linux is subscribed to via gnmic; cEOS is polled via the OTel SNMP exporter from contrib and also subscribed to via gnmic. Both routers send syslog to an OTel collector. The Mermaid diagram below shows the overall layout.
+
+The pipeline uses a series of collecting agents (OTel SNMP exporter, OTel syslog receiver, and gnmic), all of which export metrics (or events, in the case of syslog) to a downstream OTel collector functioning as a gateway that does fan out (sort of) to Loki (via OTLP HTTP) and Prometheus (via remote_write). Alertmanager is also present to take alerts from Prometheus.
+
+This isn't intended as a prod stack, more a basic lab environment to build familiarity with OTel and its assorted mechanics. There are some rough edges here; this was mostly me as a network engineer trying to gain familiarity with OTel.
 
 ### Data flow
 
@@ -20,28 +24,30 @@ Metrics come in two ways: a push-style gNMI pipeline (gnmic subscribes, both rou
 
 ## Bring it up
 
+After cloning the repo
+
 ```bash
 cd gnmic-otel-lab
 containerlab deploy -t topo.clab.yml
-  ```
+```
 
 ## Create traffic
 
-Interface counters only move if something's crossing the data plane. `./traffic.sh` wraps iperf3 on `host2` → `host1` (8 parallel TCP streams, ≈1.6 Mbit/s total) so the rate panels in Grafana have something to show:
+Interface counters are more interesting with traffic, so `./traffic.sh` wraps iperf3 on `host2` → `host1` and generates 8 parallel TCP streams, rate-limited in the script to roughly 1.6 Mbit/s total so the rate panels in Grafana have something to show.
 
-To start traffic
+Start traffic:
 ```bash
 ./traffic.sh start
 ```
-To stop the traffic
-```
+Stop traffic:
+```bash
 ./traffic.sh stop
 ```
 
 ## Web UIs
 
 - **Prometheus** http://localhost:9090
-- **Alertmanager** http://localhost:9093 (null receiver — alerts are visible in the UI but not delivered anywhere)
+- **Alertmanager** http://localhost:9093 (null receiver, so alerts are visible in the UI but not delivered anywhere; see `configs/alertmanager.yml`)
 - **Grafana** http://localhost:3000 (anonymous Admin enabled, or admin/admin). Two pre-provisioned dashboards:
   - **"Network data plane"** (uid `gnmic-otel-lab`): interface throughput and error rates from gNMI.
   - **"Telemetry pipeline health"** (uid `gnmic-otel-lab-pipeline`): gNMI target state, collector throughput, Prom remote_write health, Loki ingest rate, and a live syslog stream.
@@ -56,9 +62,13 @@ containerlab destroy -t topo.clab.yml --cleanup
 
 ## Quick tshooting steps if things aren't working
 
-Quick per-component health checks, roughly in the order data flows. Each one tells you whether that hop is alive and passing something downstream if a later check fails, the first failing hop is where to look.
+Quick per-component health checks, roughly in the order data flows. Each one tells you whether that hop is alive and passing something downstream. If a later check fails, the first failing hop is where to look.
 
-Six internal components expose ports to the host: **otelcol** (4317, 4318, 13133, 1777), **otelcol-syslog** (5514/udp), **prometheus** (9090), **alertmanager** (9093), **loki** (3100), **grafana** (3000). Everything else (gnmic, otelcol-snmp, the routers, the hosts) is only reachable via `docker exec` or over the `clab-mgmt` bridge. gnmic's self-metrics and every collector's self-telemetry flow through the pipeline into Prom, so **Prometheus is the canonical place to check internal-component health** not each container's own /metrics endpoint. Each collector stamps its own `service.name` on its self-telemetry (`otelcol-gateway`, `otelcol-snmp`, `otelcol-syslog`), so filter on `service_name=` in PromQL to pick one out.
+Six internal components expose ports to the host: **otelcol** (4317, 4318, 13133, 1777), **otelcol-syslog** (5514/udp), **prometheus** (9090), **alertmanager** (9093), **loki** (3100), **grafana** (3000). Everything else (gnmic, otelcol-snmp, the routers, the hosts) is only reachable via `docker exec` or over the `clab-mgmt` bridge.
+
+gnmic's self-metrics and every collector's self-telemetry flow through the pipeline into Prom, so **Prometheus is the canonical place to check internal-component health**, not each container's own /metrics endpoint. Each collector stamps its own `service.name` on its self-telemetry (`otelcol-gateway`, `otelcol-snmp`, `otelcol-syslog`), so filter on `service_name=` in PromQL to pick one out.
+
+Note there is also a Grafana dashboard that hits most of these items; if the light is green the trap is clean, so to speak. Otherwise you can use the commands below to figure out where things might be breaking down if you hit issues.
 
 ### Switches: cEOS and SR Linux (gNMI targets)
 
@@ -212,43 +222,38 @@ The lab's rule set lives in `configs/prometheus-rules.yml`. `[]` from both in a 
 curl -s localhost:9090/api/v1/rules | head -c 300; echo
 ```
 
-## Notes
+## Notes and things (right or wrong) learned along the way
 
-1. **gnmic counter-patterns default is empty** every metric becomes
+1. **gnmic `counter-patterns` default is empty.** Every metric becomes
    a Gauge unless you configure regex patterns. This config flags
    `octets|packets|bytes|errors|discards|drops` as Sums. Without this,
    `rate()` queries silently give wrong answers.
 
-2. **gnmic resource-tag-keys default is empty** all tags become
+2. **gnmic `resource-tag-keys` default is empty.** All tags become
    data-point attributes (Prom labels). We lift `source` and `target`
    to OTLP Resource attributes for saner downstream filtering.
 
-3. **Collector memory_limiter goes first in the pipeline**, always.
-   At the limit it *refuses* data, upstream retries, not graceful
-   degradation. Still better than OOMing.
+3. **Collector `memory_limiter` goes first in the pipeline, always.**
+   At the limit it *refuses* data and upstream retries; not graceful
+   degradation, but still better than OOMing.
 
-4. **Prom remote_write receiver requires `--web enable-remote-write-receiver`**.
-   Missing that flag = silent 404s from the collector side.
+4. **Prom remote_write receiver requires `--web.enable-remote-write-receiver`.**
+   Missing that flag means silent 404s from the collector side.
 
-5. **`resource_to_telemetry_conversion: enabled`** on the remote_write
-   exporter promotes every Resource attribute to a Prom label on every
+5. **`resource_to_telemetry_conversion: enabled` on the remote_write
+   exporter** promotes every Resource attribute to a Prom label on every
    series.
 
-6. **cEOS appears to freeze the gNMI Notification timestamp on unchanged leaves** 
+6. **cEOS appears to freeze the gNMI Notification timestamp on unchanged leaves**
    (e.g. `components/component/state/memory/available`). It keeps
    re-sending the value at every sample interval, but stamped with the
    original sample time, forever. gnmic's OTLP output uses the notification
    timestamp verbatim, so Prometheus sees the same ancient datapoint and
-   drops the series past its default 5-minute `lookback-delta`. The metric
-   silently vanishes from instant queries ~5 min after bring-up even though
-   samples are still arriving on the wire. Fix in this lab: an
-   `event-override-ts` processor on the gnmic OTLP output rewrites each
-   event timestamp to `now()`. Trades true sample-time fidelity for
-   continuity.
+   drops the series past its default 5-minute `lookback-delta`
+   (`--query.lookback-delta`). The metric silently vanishes from instant
+   queries ~5 min after bring-up even though samples are still arriving on
+   the wire. Fix in this lab: an `event-override-ts` processor on the gnmic
+   OTLP output rewrites each event timestamp to `now()`. Trades true
+   sample-time fidelity for continuity.
 
-## Things to try from here
-
-- Add a `transform` processor to the collector
-- Turn on `debug` exporter with `verbosity: detailed` to see raw
-  OTLP structure flowing through the collector.
 
